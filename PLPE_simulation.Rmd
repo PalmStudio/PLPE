@@ -1,0 +1,591 @@
+---
+title: "PLPE simulations"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    toc_depth: 4
+    code_folding: show
+  pdf_document:
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Simulations
+
+The objective is to simulate the different planting designs from the density experiment in Palapa(*i.e.* PLPE) using ARCHIMED. We will then compare the light interception, carbon assimilation and transpiration at plot scale for each design to compare them with the measured yield.  
+The main hypothesis is that fruit yield is strongly related to carbon assimilation. 
+
+## Preparing the meteorology
+
+
+```{r echo=T, message=FALSE}
+# NB: need these two packages to be installed: 
+library(archimedR)
+library(Vpalmr)
+library(patchwork)
+library(tidyverse)
+library(data.table)
+library(lubridate)
+library(ggplot2)
+library(ggimage)
+library(viridis)
+library(plotly)
+source("helper-functions.R")
+Sys.setenv(TZ="UTC")
+```
+
+### Settings the parameters
+
+Only the ephemeris of march will be simulated for this pre-study, at half-hourly time-step, clearness of 75% (*i.e.* sunny day), and mean temperature of 24:
+
+```{r}
+timestep= 30*60 # 30 minutes
+clearness= 0.75
+sim_date= data.frame(date= as.POSIXct("2019-03-20"), clearness= 0.5)
+```
+
+### Initializing the meteo
+
+The time steps will start from 05:00 to 18:30 by 30 minutes time-step. A dynamic of air temperature is generated from a minimum and maximum daily temperature (18 and 30°C resp.).
+
+```{r}
+Hour= seq(from= as.POSIXct("2019-01-01 05:00:00"), by= timestep, 
+          to = as.POSIXct("2019-01-01 18:30:00"))
+
+# Dummy temperatures in the day:
+Tair= archimedR::temperature_dynamic(Tmax = 30, Tmin = 18, per = (24*60*60)/timestep,
+                                     shift = 3*pi/2)[10:37]
+
+Meteo= 
+  expand.grid(date= sim_date$date, hour_start= Hour)%>%
+  arrange(date,hour_start)%>%
+  mutate(hour_end= format(hour_start+timestep,"%H:%M:%S"),
+         hour_start= format(hour_start,"%H:%M:%S"),
+         temperature= Tair,
+         relativeHumidity= 90,
+         clearness= clearness)%>%
+  mutate(date= format(date, "%Y/%m/%d"), wind= 3)
+```
+
+### Saving the meteo file
+
+The file is saved into the ARCHIMED input folders:  
+
+* Setting the path to ARCHIMED to make the simulations:  
+```{r}
+path_archimed= "D:/OneDrive - cirad.fr/Travail_AMAP/Softwares/ARCHIMED/Archimed__penman_medlyn/archimed.jar"
+```
+This path has to be adapted to where ARCHIMED is located in the computer.
+
+* Saving the file:  
+```{r}
+data.table::fwrite(Meteo,sep=";",file = file.path('2-simulations/meteo_PLPE_02_2019.csv'))
+```
+
+
+## Making the scene using VPalmr (or VPALM-IDE)
+
+To simulate the different designs, we need first the 3D mock-ups of the palm trees (OPF files) and their planting design (OPS files).  
+
+For the moment, the data about these trees are quite incomplete, so we compute manually the main parameters from the field data (`param_Vpalm_PLPE_design.csv`), and use the other parameters from an average palm tree of the DA1 progeny from the SMSE trial.
+
+The scene is made using VPalmr according to the data from each design. A less advanced user may prefer to make the scenes using VPALM-IDE instead.
+
+### Importing the data
+
+Three files are imported :  
+
+* The `param_Vpalm_PLPE_design.csv` data.frame. It was made from computations made on the still uncomplete PLPE data. It is why we use it as follows instead of using the built-in import functions from VPalmr or VPALM-IDE. 
+
+* The `vpalm_template.rds` file, which is a VPALM input computed from an average tree from the DA1 progeny, and which is used as a template to fill the new values, and as default values for the data that is not yet available. 
+
+* The designs files located in "1-data/PLPE_plot_design" that are used to make the OPS files.
+
+Creating and writing the OPF and OPS:
+<!-- NB, to run the simulations, run this chunk with eval= TRUE-->
+```{r eval=TRUE}
+params= 
+  data.table::fread("1-data/processed/param_Vpalm_PLPE_design.csv", data.table = F)
+
+designs_names= paste(params$Design,params$Orientation, sep="_")
+design_files= list.files("1-data/PLPE_plot_design/",full.names = TRUE)
+
+designs= 
+  lapply(1:length(designs_names), function(x){
+    params_new= update_param(params[x,])
+    name= paste(params[x,]$Design,params[x,]$Orientation, sep="_")
+    # Importing the right design:
+    design_target= design_files[grep(name,design_files)]
+    planting_design= data.table::fread(design_target, data.table = FALSE)
+    # Making the scene:
+    if(interactive()){
+      make_scene_custom(x = params_new$custom,
+                        path = "2-simulations/scene",
+                        AMAPStudio = "D:/OneDrive - cirad.fr/Travail_AMAP/Softwares/VPalm_IDE",
+                        planting_design = planting_design, name = name)
+    }
+  })
+designs= unlist(designs, recursive = FALSE)
+```
+
+The palm tree that is in-between the triple density row in the "TripleInRow" design is actually more similar to the ones from the control, because it experiments aproximately the same density. Hence, we change the OPS file to correspond to it.
+
+```{r}
+# East-West:
+path= "2-simulations/scene/scenes/TripleInRow_EW_MAP_44.ops"
+ops= readLines(path)
+target_opf= tail(grep("TripleInRow_EW_Average_MAP_44.opf",ops),1)
+ops[target_opf]= gsub("TripleInRow","Control",ops[target_opf])
+writeLines(text = ops, con = path)
+# North-South: 
+path= "2-simulations/scene/scenes/TripleInRow_NS_MAP_44.ops"
+ops= readLines(path)
+target_opf= tail(grep("TripleInRow_NS_Average_MAP_44.opf",ops),1)
+ops[target_opf]= gsub("TripleInRow","Control",ops[target_opf])
+writeLines(text = ops, con = path)
+```
+
+Here are the plots of the different designs, made from repeated voronoïs:
+```{r}
+tmp=
+  mapply(function(x,y){
+    plot_design_rep(plot_design = x, xlim = c(0,50), ylim= c(0,50), border = 2, title = y%>%gsub("_", " ",.))#,image= 'www/palm_tiny.png')
+  },x= designs,y= names(designs),SIMPLIFY= FALSE)
+patchwork::wrap_plots(tmp, ncol= 3, guides= 'collect')
+ggsave("PLPE designs.png", device = "png", path = "2-outputs/plots",scale = 1, width = 17,
+       height = 20, units = "cm",dpi = 150)
+```
+
+
+## ARCHIMED simulations
+
+An ARCHIMED simulation is done for each design on the same day.
+
+### Initialization
+
+We have to set the path to ARCHIMED on the computer:  
+```{r}
+PLPE= list(Latitude= 0.9261918, Altitude = 45)
+```
+
+
+### Meteo file
+Setting the meteo file to use for all simulations:
+```{r}
+archimedR::set_config(file= path.expand("2-simulations/ArchimedConfiguration.properties"), parameter = "meteoFile", value="meteo_PLPE_02_2019.csv")
+```
+
+NB: you can check the value afterwards to be sure: 
+```{r}
+archimedR::read_config(file= "2-simulations/ArchimedConfiguration.properties",parameter = "meteoFile")
+```
+
+### General properties
+
+The general properties of ARCHIMED can be optionnally set if needed. 
+
+Here we ask for:
+
+* 46 sky sectors for the turtle to compute the diffuse light  
+* 200.000 pixels for the pixel table to compute light interception  
+
+```{r}
+archimedR::set_config(file= "2-simulations/ArchimedConfiguration.properties", parameter= "skySectors", value= 46)
+archimedR::set_config(file= "2-simulations/ArchimedConfiguration.properties", parameter= "numberOfPixels", value= 200000)
+```
+
+We also need to set the latitude and altitude of the plots to compute the sun position:
+
+```{r}
+set_config(file= "2-simulations/ArchimedConfiguration.properties", parameter= "latitude", value= PLPE$Latitude)
+set_config(file= "2-simulations/ArchimedConfiguration.properties", parameter= "altitude", value= PLPE$Altitude)
+```
+
+And finally the output directory:
+```{r}
+sim_folder= "2-simulations/output"
+set_config(file= "2-simulations/ArchimedConfiguration.properties", parameter= "outputDirectory", value= basename(sim_folder))
+```
+
+### Output variables
+
+We have to set the output variables we are interested in. Here we will ask for: 
+
+* stepNumber : the step ID, to compute variables for each time-step;  
+* stepDuration: the step duration in seconds, to integrate over each time-step;  
+* plantId: the plant ID to be able to compute per-plant variables;   
+* nodeId: the node ID, which is the id of each object in the scene (*e.g.* leaflet);  
+* type: the node type (*e.g.* leaflet);  
+* meshArea: the mesh area of each node, *e.g.* to get the palm tree leaf area;  
+* enb_netrad_W_m2: the net radiation of the node;  
+* enb_latentheat_W_m2: the latent heat of the node;  
+* enb_sensibleheat_W_m2: the sensible heat of the node;  
+* enb_transpir_kg_s: the transpiration of the node;  
+* temperature_C: the temperature of the node;  
+* photo_assimilation_rate_umol_m2_s: net photosynthesis (An) by surface unit (see photo_assimilation_umol_s for photosynthesis at the node scale);  
+* photo_stomatal_conductance_mol_m2_s: stomatal conductance (Gs) by surface unit.  
+
+```{r}
+set_config(file= "2-simulations/ArchimedConfiguration.properties", parameter= "nodesValuesColumns", value= "stepNumber stepDuration plantId nodeId type meshArea enb_netrad_W_m2 enb_latentheat_W_m2 enb_sensibleheat_W_m2 enb_transpir_kg_s enb_leaf_temp_C photo_assimilation_rate_umol_m2_s photo_assimilation_umol_s photo_stomatal_conductance_mol_m2_s absIrradiance_withScattering_PAR_NIR absEnergy_withScattering_PAR_NIR absIrradiance_withScattering_PAR")
+```
+
+
+### Running the simulations
+
+The plot boundaries and the target OPS files are set for each simulation, and then ARCHIMED is called to make the simulation.
+<!-- NB, to run the simulations, run this chunk with eval= TRUE-->
+```{r, eval= FALSE}
+parameters= list("xMin","yMin","xMax","yMax")
+design_files= list.files("1-data/PLPE_plot_design/",full.names = TRUE)
+
+#  Reading the model manager: 
+model_manager= fread("2-simulations/models_palmtree.csv", data.table = F)
+
+# Extracting the MAP
+MAP= params$MAP
+
+# Cleaning the Output folder:
+unlink(sim_folder, recursive = TRUE, force = TRUE)
+
+# NB: if ARCHIMED did not complete the simulation and returned an error, open the OPS file and 
+# change the OPF files for ones that worked previously, run a simulation, change back the OPFs
+# to the right ones and it may work.
+tmp=
+  mapply(function(x,y){
+    # Set the scene boundaries:
+    planting_design= data.table::fread(x, data.table = FALSE)
+    tmp=
+      lapply(parameters, function(z){
+        value= unique(planting_design[,grep(z,colnames(planting_design), ignore.case = TRUE)])
+        set_config(file= "2-simulations/ArchimedConfiguration.properties", parameter= z, value= value)
+      })
+    # Set the ops name: 
+    name= gsub("design_", "", basename(x))%>%gsub(".csv","",.)
+    path= file.path("scene", "scenes", paste0(name, "_MAP_",y, ".ops"))
+    set_config(file= "2-simulations/ArchimedConfiguration.properties",parameter = "file", value = path)
+    # Updating the model manager:
+    model_manager$Node_id[model_manager$Group=="pavement"]= 2 + nrow(designs[[name]])
+    fwrite(model_manager, "2-simulations/models_palmtree.csv",sep = ";", quote = FALSE)
+    # Run ARCHIMED:
+    run_archimed(exe = path_archimed, memory= 16384, config = "D:/OneDrive - cirad.fr/Travail_AMAP/Projets/PalmStudio/PLPE/2-simulations/ArchimedConfiguration.properties")
+    
+  }, design_files[1], MAP[1])
+# Test if the simulations ran successfully:
+if(any(!tmp)){
+  warning(paste("Error during ARCHIMED simulation for:\n *",paste(names(tmp)[!tmp], collapse = "\n * ")))
+}
+```
+
+## Results
+
+### Importing the results
+
+> The code used below works only if there are only the target simulations into the output folder, so carefully remove other simuations first, or change the output directory used by ARCHIMED beforehand.
+
+Finding the output files:
+```{r}
+files_sim= list.files(sim_folder, recursive = TRUE, full.names = TRUE)
+
+path_nodes= files_sim[grep("nodes_values.csv",files_sim)]
+path_meteo= files_sim[grep("meteo.csv",files_sim)]
+path_ops= files_sim[grep(".ops$",files_sim)]
+```
+
+Importing the meteorology file from the first simulation (all are the same):
+
+```{r}
+meteo= 
+  import_meteo(x = file.path(path_meteo[1]))%>%
+  mutate(date= as.POSIXct(date)+ seconds(hour_start))
+```
+
+Finding the plots area:
+```{r}
+Area_plots= 
+  lapply(path_ops, function(x){
+    plot_dim= archimedR::read_ops(file= x)$dimensions
+    
+    data.frame(
+      Treatment= x%>%dirname()%>%strsplit(split = "/")%>%unlist()%>%
+        head(-1)%>%tail(1)%>%strsplit(split = " ")%>%unlist()%>%head(1)%>%
+        gsub("_MAP_44","",.),
+      Area_plot= (plot_dim$xmax-plot_dim$xmin)*(plot_dim$ymax-plot_dim$ymin)
+    )
+  })%>%data.table::rbindlist()
+```
+
+
+Importing the node values (main output):
+
+```{r}
+nodes= 
+  lapply(path_nodes, function(x){
+    name= 
+      x%>%dirname()%>%strsplit(split = "/")%>%unlist()%>%
+      head(-1)%>%tail(1)%>%strsplit(split = " ")%>%unlist()%>%head(1)%>%
+      gsub("_MAP_44","",.)
+    data.table::fread(x,na.strings = c("null","NaN"),fill=TRUE, data.table = FALSE)%>%
+      mutate(Treatment= name)
+  })%>%dplyr::bind_rows()%>%
+  mutate(globalIrradiation= absIrradiance_withScattering_PAR_NIR*10^-6*
+           .data$stepDuration,                                                      # MJ m-2[obj] timestep-1
+         Global_Intercepted= .data$absEnergy_withScattering_PAR_NIR*10^-6,          # MJ obj-1 timestep-1
+         PAR_irradiance= .data$absIrradiance_withScattering_PAR*4.57,               # umol m-2[obj] s-1
+         photosynthesis_rate= .data$photo_assimilation_rate_umol_m2_s,              # umol[C] m-2[obj] s-1
+         An_leaflet= .data$photo_assimilation_umol_s,                               # umol[C] obj-1 s-1
+         transpiration= .data$enb_transpir_kg_s*.data$meshArea*.data$stepDuration,  # mm obj-1 timestep-1
+         LE= enb_latentheat_W_m2,                                                   # J m-2 s-1
+         H= enb_sensibleheat_W_m2,                                                  # J m-2 s-1
+         Tleaf= enb_leaf_temp_C)                                                    # °C
+```
+
+
+Computing the intercepted radiation of the leaves, the assimilation, transpiration, leaf area and LAI for each design and orientation:
+
+* At time-step scale:
+
+  * At tree scale: 
+
+```{r, message=FALSE,warning=FALSE}
+df_tree_step= 
+  nodes%>%
+  group_by(Treatment)%>%
+  filter(type=="Leaflet")%>%
+  dplyr::left_join(Area_plots, by= "Treatment")%>%
+  dplyr::left_join(meteo%>%select(date,step), by= c("stepNumber" = "step"))%>%
+  group_by(stepNumber ,Treatment,plantId)%>%
+  summarise(Date= unique(date),
+            Global_Intercepted_leaves= sum(.data$Global_Intercepted,na.rm=T),
+            # Global intercepted radiation in MJ tree-1 timestep-1
+            An= sum(.data$An_leaflet*.data$stepDuration*10^-6,na.rm=T), 
+            # umol m-2 leaf s-1 -> mol tree-1 timestep-1
+            transpiration= sum(.data$transpiration,na.rm=T),
+            # Total transpiration in the plot in mm tree-1 timestep-1
+            Leaf_Area= sum(.data$meshArea, na.rm=T), N= n(),
+            # Leaf area of each tree in m-2 tree-1
+            Area_plot= mean(.data$Area_plot))%>%
+  separate(Treatment, c("design","orientation"), "_", remove= FALSE)%>%
+  group_by(Treatment,design,orientation,stepNumber)%>%
+  mutate(density= n()/.data$Area_plot*10000,
+         LAI= sum(.data$Leaf_Area)/.data$Area_plot)%>%
+  ungroup()
+  
+
+df_tree_step$design= as.factor(df_tree_step$design)
+levels(df_tree_step$design)= list(Control= "Control", LargeInterRow= "LargeInterRow", DoubleRow= "DoubleRow", DoubleInRow= "DoubleInRow", TripleInRow= "TripleInRow")
+```
+
+  * At plot scale:
+```{r}
+df_plot_step=
+  df_tree_step%>%
+  group_by(Treatment,design,orientation,stepNumber)%>%
+  summarise(Date= unique(Date),
+            Global_Intercepted_leaves=
+              sum(.data$Global_Intercepted_leaves/.data$Area_plot,na.rm=T),
+            # Global intercepted radiation in MJ m-2 timestep-1
+            An= sum(.data$An/.data$Area_plot,na.rm=T), 
+            # umol m-2 leaf s-1 -> mol m-2[plot] timestep-1
+            transpiration= sum(.data$transpiration/.data$Area_plot,na.rm=T),
+            # Total transpiration in the plot in mm timestep-1
+            Leaf_Area= sum(.data$Leaf_Area, na.rm=T), N= n(),
+            Area_plot= mean(.data$Area_plot),
+            ntrees= length(unique(.data$plantId)))%>%
+  mutate(LAI= .data$Leaf_Area/.data$Area_plot,
+         density= .data$ntrees/.data$Area_plot*10000)
+
+df_plot_step$design= as.factor(df_plot_step$design)
+levels(df_plot_step$design)= list(Control= "Control", LargeInterRow= "LargeInterRow", DoubleRow= "DoubleRow", DoubleInRow= "DoubleInRow", TripleInRow= "TripleInRow")
+```
+
+* At daily scale:
+
+  * At tree scale: 
+
+```{r}
+df_tree_day=
+  df_tree_step%>%
+  group_by(Treatment,design,orientation,plantId)%>%
+  summarise(Global_Intercepted_leaves= sum(.data$Global_Intercepted_leaves,na.rm=T),
+            # Global intercepted radiation in MJ tree-1 day-1
+            An= sum(.data$An,na.rm=T), 
+            # umol m-2 leaf s-1 -> mol tree-1 day-1
+            transpiration= sum(.data$transpiration,na.rm=T),
+            # Total transpiration in the plot in mm tree-1 day-1
+            Leaf_Area= mean(.data$Leaf_Area, na.rm=T), N= n(),
+            # Leaf area of each tree in m-2 tree-1
+            Area_plot= mean(.data$Area_plot),
+            density= unique(.data$density),
+            LAI= unique(.data$LAI))
+```
+
+  * At plot scale:
+  
+```{r}
+df_plot_day=
+  df_tree_day%>%
+  group_by(Treatment,design,orientation)%>%
+  summarise(Global_Intercepted_leaves= 
+              sum(.data$Global_Intercepted_leaves/.data$Area_plot,na.rm=T),
+            # Global intercepted radiation in MJ m-2 timestep-1
+            An= sum(.data$An/.data$Area_plot,na.rm=T), 
+            # umol m-2 leaf s-1 -> mol m-2[plot] timestep-1
+            transpiration= sum(.data$transpiration/.data$Area_plot,na.rm=T),
+            # Total transpiration in the plot in mm timestep-1
+            Leaf_Area= mean(.data$Leaf_Area, na.rm=T),
+            Area_plot= mean(.data$Area_plot),
+            density= unique(.data$density),
+            LAI= unique(.data$LAI))%>%
+  mutate(WUE= An/transpiration)
+
+df_tree_day$design= as.factor(df_tree_day$design)
+levels(df_tree_day$design)= list(Control= "Control", LargeInterRow= "LargeInterRow", DoubleRow= "DoubleRow", DoubleInRow= "DoubleInRow", TripleInRow= "TripleInRow")
+```
+
+```{r include=FALSE}
+# Write the results in csv files
+mapply(
+  function(x,y){
+    data.table::fwrite(x = x, file = file.path("2-outputs",paste0(y,".csv")))
+  },
+  list(df_tree_step,df_plot_step,df_tree_day,df_plot_day),
+  c("df_tree_step","df_plot_step","df_tree_day","df_plot_day"))
+```
+
+
+### Visualize the results
+
+Setting the same colors for all plots: 
+
+```{r}
+library(RColorBrewer)
+colors_vec= brewer.pal(5, "BrBG")
+colors_vec[3]= "grey30"
+names(colors_vec)= c("Control", "LargeInterRow","DoubleRow","DoubleInRow","TripleInRow")
+```
+
+#### Semi-hourly time-step
+
+Intercepted global radiation per time-step and per planting design at plot scale:
+```{r}
+gg_plot_step= 
+  df_plot_step%>%
+  ggplot(aes(x= Date, y= Global_Intercepted_leaves))+
+  facet_wrap(.~orientation)+
+  geom_area(aes(fill= design, color= design), position = 'identity', alpha= 0.3)+
+  geom_point(aes(color= design), size= 1.2)+
+  scale_fill_manual(values= colors_vec)+
+  scale_colour_manual(values= colors_vec)+
+  xlab("Time (hour of the day)")+
+  ylab("Intercepted radiation (MJ m-2 half-hour-1)")+
+  labs(fill= "Design")+
+  guides(color= FALSE)+
+  ggtitle("Half-hourly intercepted global radiation by trees at plot scale")
+
+gg_plot_step
+# ggplotly(gg_plot_step)
+```
+
+The same at tree scale: 
+```{r, message= FALSE, warning=FALSE, fig.height= 12}
+df_tree_step%>%
+  mutate(plantId= as.character(plantId))%>%
+  ggplot(aes(x= Date, y= Global_Intercepted_leaves))+
+  facet_wrap(vars(design, orientation), ncol = 2)+
+  geom_line(aes(color= design, lty= plantId), size= 1)+
+  geom_point(aes(color= design, lty= plantId), size= 1)+
+  geom_area(aes(fill= design, group= plantId), position = 'identity', alpha= 0.3)+
+  scale_fill_manual(values= colors_vec)+
+  scale_colour_manual(values= colors_vec)+
+  labs(colour= "Design", plantId= "Plant") +
+  ylab("Intercepted Radiation (MJ tree-1 half-hour-1)")+
+  xlab("Time (hour of the day)")+
+  ggtitle("Half-hourly intercepted global radiation at tree-scale")+
+  guides(color= FALSE)
+ 
+# ggsave("Half-hourly intercepted global radiation at tree-scale.png", device = "png",
+#        path = "2-outputs/plots",scale = 1, width = 17, height = 20, units = "cm",
+#        dpi = 150)
+```
+
+#### Daily time-step
+
+At tree scale:
+```{r, message= FALSE, warning=FALSE}
+df_tree_day%>%
+  ggplot(aes(x= design, y=Global_Intercepted_leaves))+
+    geom_bar(aes(color= design, fill= design, alpha= orientation),
+           stat="identity", show.legend = TRUE, position = 'dodge')+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5), panel.background = element_rect(fill = "gray90"))+
+  labs(fill= "Design") + 
+  scale_fill_manual(values= colors_vec)+
+  scale_color_manual(values= colors_vec)+
+  guides(color = FALSE)+
+  ylab("Intercepted Radiation (MJ tree-1 day-1)")+
+  ggtitle("Daily intercepted radiation at tree scale")
+```
+
+At plot scale:
+
+```{r, message= FALSE, warning=FALSE}
+gg_plot_day_1= 
+  df_plot_day%>%
+  ggplot(aes(x= design, y=Global_Intercepted_leaves))+
+    geom_bar(aes(color= design, fill= design, alpha= orientation),
+           stat="identity", show.legend = TRUE, position = 'dodge')+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5))+
+  labs(fill= "Design", alpha= "") +
+  scale_fill_manual(values= colors_vec)+
+  scale_color_manual(values= colors_vec)+
+  guides(color = FALSE)+
+  ylab("Intercepted Radiation (MJ m-2 day-1)")+
+  ggtitle("Daily intercepted radiation at plot scale")
+
+plotly::ggplotly(gg_plot_day_1, tooltip= c("y", "x", "alpha"))
+```
+
+The daily values at plot scale for all variables are as follow:
+```{r, message= FALSE, warning=FALSE, fig.height = 12}
+gg_plot_day=
+  df_plot_day%>%
+  select(-.data$Leaf_Area, -.data$Area_plot)%>%
+  # filter(design=="Control"||design=="TripleInRow")%>%
+  # Using select to order the variables correctly:
+  mutate(An= An*12.01)%>%
+  select(Treatment,orientation, design, density, LAI,
+         Global_Intercepted_leaves,An,transpiration,WUE)%>%
+  # select(Treatment,orientation, design, Global_Intercepted_leaves,An,WUE)%>%
+  # rename("Intercepted Radiation (MJ m-2 day-1)"= Global_Intercepted_leaves,
+  #        "C Assimilation (gC m-2 day-1)"= An,
+  #        "WUE (gC mm-1)"= WUE)%>%
+  rename("Intercepted Radiation (MJ m-2 day-1)"= Global_Intercepted_leaves,
+         "C Assimilation (gC m-2 day-1)"= An,
+         "Transpiration (mm day-1)"= transpiration,
+         "Palm tree density (tree hectare-1)"= density,
+         "LAI (m2 m-2)"= LAI,
+         "WUE (gC mm-1)"= WUE)%>%
+  reshape2::melt(id.vars= c("Treatment","design","orientation"))%>%
+  ggplot(aes(x= design, color= design, fill= design))+
+  # facet_wrap(.~variable, scales = "free_y", labeller= label_parsed, ncol = 2)+
+  facet_wrap(.~variable, scales = "free_y", ncol = 1)+
+  geom_bar(aes(y= value,alpha= orientation),
+           stat="identity", show.legend = TRUE, position = 'dodge')+
+  xlab("")+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5))+
+  labs(fill= "",alpha="") + guides(color = FALSE)+
+  scale_fill_manual(values= colors_vec)+
+  scale_color_manual(values= colors_vec)+
+  ggtitle("Daily outputs at plot scale")
+
+# gg_plot_day
+# ggsave("Daily outputs at plot scale.png", device = "png",
+#        path = "2-outputs/plots",scale = 1, width = 20, height = 15, units = "cm",
+#        dpi = 150)
+plotly::ggplotly(gg_plot_day, tooltip= c("y", "x", "alpha"))
+```

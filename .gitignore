@@ -1,3 +1,8 @@
+1-data
+2-outputs
+2-simulations
+*.html
+
 # History files
 .Rhistory
 .Rapp.history
